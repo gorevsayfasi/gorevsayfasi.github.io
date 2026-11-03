@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <meta name="robots" content="noindex" />
+  <title>Temizleniyor…</title>
+</head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;background:#f5f6f8;color:#1a1a1a;text-align:center;padding:24px;box-sizing:border-box;">
+  <div id="m" style="font-size:18px;font-weight:600;">Temizleniyor…</div>
+  <script>
+  (function () {
+    var bitti = false;
+    function git() {
+      if (bitti) return; bitti = true;
+      try { document.getElementById('m').textContent = 'Temizlendi, siteye yönlendiriliyorsunuz'; } catch (e) {}
+      setTimeout(function () { location.replace('/?v=' + Date.now()); }, 1200);
+    }
+    var isler = [];
+    try { localStorage.clear(); } catch (e) {}
+    try { sessionStorage.clear(); } catch (e) {}
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+        isler.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+          return Promise.all(rs.map(function (r) { return r.unregister(); }));
+        }));
+      }
+    } catch (e) {}
+    try {
+      if (window.caches && caches.keys) {
+        isler.push(caches.keys().then(function (ks) {
+          return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+        }));
+      }
+    } catch (e) {}
+    try {
+      if (window.Promise) Promise.all(isler.map(function (p) { return p.catch(function () {}); })).then(git, git);
+      else git();
+    } catch (e) { git(); }
+    setTimeout(git, 3000);
+  })();
+  </script>
+</body>
+</html>
