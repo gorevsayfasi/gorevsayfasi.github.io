@@ -2,6 +2,44 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <script>
+  /* tk-fallback: sayfa ~8 sn içinde açılmazsa veya açılırken hata olursa "Sayfa yüklenemedi" + Yenile gösterir. Akışa gecikme eklemez. */
+  (function () {
+    var hazir = false, gosterildi = false, hata = false;
+    function yenile() {
+      try {
+        var q = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^v=/.test(p); });
+        q.push('v=' + Date.now());
+        location.replace(location.pathname + '?' + q.join('&') + location.hash);
+      } catch (e) { location.reload(); }
+    }
+    function goster() {
+      if (hazir || gosterildi) return;
+      gosterildi = true;
+      try {
+        var d = document.createElement('div');
+        d.id = 'tk-fallback';
+        d.setAttribute('style', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a;');
+        d.innerHTML = '<div style="font-size:20px;font-weight:700;margin-bottom:16px;">Sayfa yüklenemedi</div>' +
+          '<button type="button" style="font-size:17px;font-weight:700;padding:14px 36px;border:0;border-radius:14px;background:#F27A1A;color:#fff;">Yenile</button>' +
+          '<a href="/temizle" style="margin-top:18px;font-size:13px;color:#6b7280;">Sorun sürerse önbelleği temizle</a>';
+        d.getElementsByTagName('button')[0].onclick = yenile;
+        (document.body || document.documentElement).appendChild(d);
+      } catch (e) {}
+    }
+    function gizle() {
+      var d = document.getElementById('tk-fallback');
+      if (d && d.parentNode) d.parentNode.removeChild(d);
+      gosterildi = false;
+    }
+    window.__tkHazir = function () { if (hata) return; hazir = true; gizle(); };
+    window.onerror = function (msg) { if (hazir || /^Script error.?$/.test(String(msg))) return; hata = true; goster(); };
+    setTimeout(goster, 8000);
+  })();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Tıklama App</title>
   <style>
@@ -2364,6 +2402,12 @@
     } else {
       init();
     }
+  </script>
+  <script>
+    (function () {
+      function ok() { if (typeof init === 'function' && document.getElementById('app') && window.__tkHazir) window.__tkHazir(); }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ok); else ok();
+    })();
   </script>
 </body>
 </html>
