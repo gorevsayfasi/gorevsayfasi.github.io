@@ -35,6 +35,59 @@
       if (d && d.parentNode) d.parentNode.removeChild(d);
       gosterildi = false;
     }
+    /* tk-gecis: hata/ulaşılamama durumunda 4 siteyi sırayla dener (tiklama.com.tr -> pages.dev -> github.io -> yedek), çalışan sitede kalır.
+       Hepsi denenince bir kez https://www.tiklama.com.tr/temizle?temizlendi=1 ; o da olmazsa "Tekrar dene". Aktif turu olan kullanıcı yönlendirilmez. */
+    var SITELER = ['https://www.tiklama.com.tr/', 'https://gorev-sayfa.pages.dev/', 'https://gorevsayfasi.github.io/', 'https://yedek.tiklama.com.tr/'];
+    function prm(k) { var m = new RegExp('[?&]' + k + '=([^&#]*)').exec(location.search); return m ? m[1] : null; }
+    var SIRA = (function () {
+      var h = String(location.hostname || '').toLowerCase();
+      if (h === 'tiklama.com.tr' || h === 'www.tiklama.com.tr') return 0;
+      for (var i = 1; i < SITELER.length; i++) if (SITELER[i].indexOf('//' + h + '/') > 0) return i;
+      return -1;
+    })();
+    var GECIS = Math.max(0, parseInt(prm('gecis'), 10) || 0), TEMIZ = prm('temizlendi') === '1', TEST2 = prm('testhata') === '2';
+    var gecisBasladi = false;
+    function turVar() {
+      try { var o = JSON.parse(localStorage.getItem('tiklama_session_v2') || 'null'); return !!(o && typeof o.savedAt === 'number' && Date.now() - o.savedAt < 30 * 60 * 1000); } catch (e) { return false; }
+    }
+    function perde(yazi, butonlu) {
+      try {
+        var d = document.getElementById('tk-gecis') || document.createElement('div');
+        d.id = 'tk-gecis';
+        d.setAttribute('style', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;color:#1a1a1a;');
+        d.innerHTML = '<div style="font-size:19px;font-weight:700;margin-bottom:16px;">' + yazi + '</div>' +
+          (butonlu ? '<button type="button" style="font-size:17px;font-weight:700;padding:14px 36px;border:0;border-radius:14px;background:#F27A1A;color:#fff;">Tekrar dene</button>' : '');
+        if (butonlu) d.getElementsByTagName('button')[0].onclick = function () { location.replace(SITELER[0] + '?v=' + Date.now()); };
+        if (!d.parentNode) (document.body || document.documentElement).appendChild(d);
+      } catch (e) {}
+    }
+    /* neden: 'yukleme' (sayfa açılmadı / JS hatası) veya 'api'. turYok: çağıran aktif tur olmadığını biliyor. true = geçiş devralındı. */
+    window.__tkGecis = function (neden, turYok) {
+      if (SIRA < 0 || gecisBasladi) return gecisBasladi;
+      if (!turYok && turVar()) return false;
+      gecisBasladi = true;
+      var u = null;
+      if (GECIS < SITELER.length - 1) u = SITELER[(SIRA + 1) % SITELER.length] + '?gecis=' + (GECIS + 1) + (TEMIZ ? '&temizlendi=1' : '') + (TEST2 ? '&testhata=2' : '') + '&v=' + Date.now();
+      else if (!TEMIZ) u = SITELER[0] + 'temizle?temizlendi=1' + (TEST2 ? '&testhata=2' : '');
+      if (!u) { perde('Bağlantı kurulamadı. Lütfen internetinizi kontrol edip tekrar deneyin.', true); return true; }
+      perde(GECIS < SITELER.length - 1 ? 'Bağlantı sorunu, yedek siteye geçiliyor…' : 'Bağlantı sorunu, önbellek temizlenip tekrar deneniyor…', false);
+      setTimeout(function () {
+        if (neden === 'yukleme' && hazir && !hata) { gecisBasladi = false; var d = document.getElementById('tk-gecis'); if (d && d.parentNode) d.parentNode.removeChild(d); return; }
+        location.replace(u);
+      }, 1500);
+      return true;
+    };
+    /* Kritik istek başarılı: bu sitede kalınır, geçiş sayacı sıfırlanır, adres temizlenir. */
+    window.__tkGecisTamam = function () {
+      GECIS = 0; TEMIZ = false; TEST2 = false;
+      try {
+        if (!/[?&](gecis|temizlendi|testhata)=/.test(location.search) || !history.replaceState) return;
+        var q = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^(gecis|temizlendi|testhata|v)=/.test(p); });
+        history.replaceState(null, '', location.pathname + (q.length ? '?' + q.join('&') : '') + location.hash);
+      } catch (e) {}
+    };
+    var gosterAsil = goster;
+    goster = function () { if (hazir || gosterildi) return; if (window.__tkGecis('yukleme', false)) return; gosterAsil(); };
     window.__tkHazir = function () { if (hata) return; hazir = true; gizle(); };
     window.onerror = function (msg) { if (hazir || /^Script error.?$/.test(String(msg))) return; hata = true; goster(); };
     setTimeout(goster, 8000);
@@ -1053,17 +1106,38 @@
     }
 
     /** Fresh load: read Linkler sheet. Failures fall back to DEFAULT_LINKS. */
-    function loadLinksFromSheet(done) {
+    function loadLinksFromSheet(done, ilk) {
       setStartReady(false);
-      runServer('getLinks', [], function (result) {
+      var bitti = false;
+      function basarili(result) {
+        if (bitti) return; bitti = true;
         applyLinks(Array.isArray(result) ? result : []);
         setStartReady(true);
+        if (ilk && window.__tkGecisTamam) window.__tkGecisTamam();
         if (done) done();
-      }, function () {
+      }
+      function basarisiz(err) {
+        if (bitti) return; bitti = true;
         applyLinks(DEFAULT_LINKS);
         setStartReady(true);
+        if (ilk && gecisGerekli_(err) && !state.sessionId && window.__tkGecis) window.__tkGecis('api', true);
         if (done) done();
-      });
+      }
+      if (ilk) {
+        if (/[?&]testhata=[12](&|#|$)/.test(location.search)) { setTimeout(function () { var te = new Error('testhata'); te.tkTest = true; basarisiz(te); }, 300); return; }
+        setTimeout(function () { var ze = new Error('linkler zaman aşımı'); ze.tkZaman = true; basarisiz(ze); }, 25000);
+      }
+      runServer('getLinks', [], basarili, basarisiz);
+    }
+
+    /** Siteye özgü olabilecek hata mı (ağ hatası / geçersiz yanıt / zaman aşımı)? Sunucu meşgul, bekleme, uygulama hataları geçiş yaptırmaz. */
+    function gecisGerekli_(err) {
+      if (!err) return false;
+      if (err.tkTest || err.tkZaman) return true;
+      if (err.bekle || err.sessionGone || err.noRetry) return false;
+      var msg = String(err.message || '');
+      if (/Kilitleme|kilit|timeout|zaman aşı|meşgul/i.test(msg)) return false;
+      return err.name === 'TypeError' || msg === 'Geçersiz API yanıtı';
     }
 
     // ---- tur içi link tazeleme (Linkler sekmesindeki değişiklikler turdaki kişiye de yansısın) ----
@@ -1452,6 +1526,8 @@
           bekleGoster_(Date.now() + err.kalanSn * 1000);
         } else if (/Kilitleme|kilit|timeout|zaman aşı/i.test(msg)) {
           toast('Sunucu meşgul. Lütfen birkaç saniye sonra tekrar Başla’ya basın.');
+        } else if (gecisGerekli_(err) && !state.sessionId && window.__tkGecis && window.__tkGecis('api', true)) {
+          // yedek siteye geçiliyor
         } else {
           toast('Kayıt başlatılamadı. İnternetinizi kontrol edip tekrar deneyin.');
         }
@@ -2395,7 +2471,7 @@
         setStartReady(true);
       } else {
         // Every fresh load reads the sheet
-        loadLinksFromSheet();
+        loadLinksFromSheet(null, true);
       }
     }
 
