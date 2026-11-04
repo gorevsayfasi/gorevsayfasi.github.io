@@ -1234,10 +1234,12 @@
         function son(v) { if (bitti) return; bitti = true; if (v) VERI.ip = v; resolve(VERI.ip); }
         setTimeout(function () { son(null); }, 4000);
         try {
-          var ipUrls = ['https://gorev-sayfa.pages.dev/api/ip'];
+          var ipUrls = ['https://gorev-sayfa.pages.dev/api/ip', 'https://www.tiklama.com.tr/api/ip'];
           (function dene(i) {
             if (i >= ipUrls.length) { son(null); return; }
-            fetch(ipUrls[i], { cache: 'no-store' }).then(function (r) { return r.json(); })
+            var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+            var tmo = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) {} }, 1700);
+            fetch(ipUrls[i], ctl ? { cache: 'no-store', signal: ctl.signal } : { cache: 'no-store' }).then(function (r) { clearTimeout(tmo); return r.json(); })
               .then(function (d) { if (d && typeof d === 'object' && d.ip) son(d); else dene(i + 1); })
               .catch(function () { dene(i + 1); });
           })(0);
@@ -1434,7 +1436,7 @@
       state.sessionId = null; state.sessionDone = false; state.step = 0;
       var linkHazir = new Promise(function (r) { taptazeLinkler_(r); });
       // IP/konum en fazla ~1.5 sn beklenir; gelmezse boş gönderilir (akış asla takılmaz)
-      var ipHazir = Promise.race([veriIpBaslat_(), new Promise(function (r) { setTimeout(r, 1500); })]).catch(function () {});
+      var ipHazir = Promise.race([veriIpBaslat_(), new Promise(function (r) { setTimeout(r, 3500); })]).catch(function () {});
       Promise.all([ipHazir, linkHazir]).then(function () {
       runServer('startSession', [name, phoneText, veriMeta_()], function (sessionId) {
         VERI.formBasAt = null;
