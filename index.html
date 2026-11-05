@@ -50,7 +50,7 @@
     function turVar() {
       try { var o = JSON.parse(localStorage.getItem('tiklama_session_v2') || 'null'); return !!(o && typeof o.savedAt === 'number' && Date.now() - o.savedAt < 30 * 60 * 1000); } catch (e) { return false; }
     }
-    /* tk-dagit: her açılışta mevcut site HARİÇ diğer 3 siteden rastgele birine uyarısız yönlendirir (sabitleme yok). Hedefe ?dagit=1 ile gider; dagit=1 ile gelen bu sefer kalır (döngü yok), param silinir. gecis/temizlendi/testhata varken, /temizle'de ve aktif turda çalışmaz. */
+    /* tk-dagit: her uygun açılışta 4 sitenin HEPSİNDEN eşit rastgele seçer (mevcut host dahil; sabitleme yok). Seçilen mevcutsa kalır; değilse uyarısız ?dagit=1 ile gider. dagit=1 ile gelen bu yüklemede kalır (döngü yok), param silinir. gecis/temizlendi/testhata varken, /temizle'de ve aktif turda çalışmaz. */
     (function () {
       try {
         try { localStorage.removeItem('tiklama_site'); } catch (e) {}
@@ -61,8 +61,8 @@
           return;
         }
         if (turVar()) return;
-        var adaylar = []; for (var j = 0; j < SITELER.length; j++) if (j !== SIRA) adaylar.push(j);
-        var i = adaylar[Math.min(adaylar.length - 1, Math.floor(Math.random() * adaylar.length))];
+        var i = Math.min(SITELER.length - 1, Math.floor(Math.random() * SITELER.length));
+        if (i === SIRA) return;
         var q = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^(v|dagit)=/.test(p); });
         q.push('dagit=1');
         window.__tkDagit = true;
