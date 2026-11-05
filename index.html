@@ -50,6 +50,30 @@
     function turVar() {
       try { var o = JSON.parse(localStorage.getItem('tiklama_session_v2') || 'null'); return !!(o && typeof o.savedAt === 'number' && Date.now() - o.savedAt < 30 * 60 * 1000); } catch (e) { return false; }
     }
+    /* tk-dagit: açılışta 4 site arasında rastgele dağıtım (24 saat sabit, localStorage 'tiklama_site'). Uyarısız. gecis/temizlendi/testhata varken, /temizle'de ve aktif turda çalışmaz. */
+    (function () {
+      try {
+        if (SIRA < 0 || /temizle/i.test(location.pathname)) return;
+        var K = 'tiklama_site', SURE = 24 * 3600 * 1000, simdi = Date.now();
+        function yaz(i) { try { localStorage.setItem(K, JSON.stringify({ i: i, t: simdi })); } catch (e) {} }
+        if (/[?&](gecis|temizlendi|testhata)=/.test(location.search)) { yaz(SIRA); return; }
+        if (prm('dagit') === '1') {
+          yaz(SIRA);
+          try { if (history.replaceState) { var q0 = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^dagit=/.test(p); }); history.replaceState(null, '', location.pathname + (q0.length ? '?' + q0.join('&') : '') + location.hash); } } catch (e) {}
+          return;
+        }
+        if (turVar()) { yaz(SIRA); return; }
+        var o = null; try { o = JSON.parse(localStorage.getItem(K) || 'null'); } catch (e) {}
+        var gecerli = o && typeof o.i === 'number' && o.i >= 0 && o.i < SITELER.length && typeof o.t === 'number' && simdi - o.t < SURE && simdi >= o.t;
+        var i = gecerli ? o.i : Math.floor(Math.random() * SITELER.length);
+        if (!gecerli) yaz(i);
+        if (i === SIRA) return;
+        var q = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^(v|dagit)=/.test(p); });
+        q.push('dagit=1');
+        window.__tkDagit = true;
+        location.replace(SITELER[i] + '?' + q.join('&') + location.hash);
+      } catch (e) {}
+    })();
     function perde(yazi, butonlu) {
       try {
         var d = document.getElementById('tk-gecis') || document.createElement('div');
