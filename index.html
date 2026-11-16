@@ -640,6 +640,24 @@
     .bekle-box .bekle-text b { font-variant-numeric: tabular-nums; }
     .bekle-box.done { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
     .bekle-thanks { margin: 6px 0 4px; font-size: 13px; color: #9a3412; text-align: center; }
+    /* SAYAC15 (16.11.2026): link tıklamasından sonra 15 sn bilgi sayacı — hiçbir şeyi engellemez */
+    .sayac15 {
+      position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%); z-index: 110; pointer-events: none;
+      display: none; align-items: center; gap: 10px;
+      background: #fff; color: var(--text, #1a1a1a); border-radius: 999px;
+      padding: 8px 16px 8px 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+      font-size: 15px; font-weight: 700; white-space: nowrap; max-width: calc(100vw - 24px);
+    }
+    .sayac15.show { display: flex; animation: fadeIn 0.2s ease; }
+    .sayac15-ic {
+      width: 34px; height: 34px; border-radius: 50%; flex: 0 0 34px;
+      display: flex; align-items: center; justify-content: center;
+      background: #fff4eb; color: var(--accent, #F27A1A); font-size: 15px; font-weight: 800;
+      border: 3px solid var(--accent, #F27A1A); box-sizing: border-box; font-variant-numeric: tabular-nums;
+    }
+    .sayac15.hazir { color: var(--ok, #16a34a); }
+    .sayac15.hazir .sayac15-ic { background: var(--ok, #16a34a); border-color: var(--ok, #16a34a); color: #fff; font-size: 18px; }
   </style>
 </head>
 <body>
@@ -2504,6 +2522,77 @@
     (function () {
       function ok() { if (typeof init === 'function' && document.getElementById('app') && window.__tkHazir) window.__tkHazir(); }
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ok); else ok();
+    })();
+  </script>
+  <script>
+    /* SAYAC15 (16.11.2026): yalnız bilgi amaçlı 15 sn geri sayım. Tıklamayı engellemez, preventDefault yok,
+       mevcut akışa (kayıt, link açma, failover, bekleme) dokunmaz. Süre Date.now() ile hesaplanır. */
+    (function () {
+      var SURE = 15000, KEY = 'tkSayac15', GOSTER_SONRA = 5 * 60 * 1000;
+      var basAt = null, tid = null, el = null, ic = null, yazi = null;
+      function kur() {
+        if (el) return el;
+        el = document.createElement('div');
+        el.className = 'sayac15'; el.id = 'sayac15';
+        el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+        ic = document.createElement('span'); ic.className = 'sayac15-ic';
+        yazi = document.createElement('span'); yazi.className = 'sayac15-yazi';
+        el.appendChild(ic); el.appendChild(yazi);
+        (document.body || document.documentElement).appendChild(el);
+        return el;
+      }
+      function adimEkrani() {
+        var s = document.getElementById('screen-step');
+        return !!(s && s.classList.contains('active'));
+      }
+      function gizle() { if (el) el.classList.remove('show', 'hazir'); }
+      function durdur() { if (tid) { clearInterval(tid); tid = null; } }
+      function guncelle() {
+        try {
+          if (basAt == null || !adimEkrani()) { gizle(); if (basAt == null) durdur(); return; }
+          var gecen = Date.now() - basAt;
+          if (gecen > SURE + GOSTER_SONRA) { basAt = null; gizle(); durdur(); return; }
+          kur();
+          var kalan = Math.max(0, Math.ceil((SURE - gecen) / 1000));
+          if (kalan > 0) {
+            el.classList.remove('hazir');
+            ic.textContent = String(kalan);
+            yazi.textContent = kalan + ' sn';
+          } else {
+            el.classList.add('hazir');
+            ic.textContent = '\u2713';
+            yazi.textContent = 'Tıklayabilirsin';
+          }
+          el.classList.add('show');
+        } catch (e) {}
+      }
+      function baslat(t) {
+        basAt = t;
+        try { localStorage.setItem(KEY, String(t)); } catch (e) {}
+        durdur();
+        guncelle();
+        tid = setInterval(guncelle, 250);
+      }
+      // Yakalama aşamasında yalnız dinler; olayı durdurmaz/engellemez.
+      document.addEventListener('click', function (ev) {
+        try {
+          var t = ev.target;
+          var b = t && t.closest ? t.closest('#btn-open-link') : null;
+          if (b && !b.disabled) baslat(Date.now());
+        } catch (e) {}
+      }, true);
+      function geriDon() { if (basAt != null) { guncelle(); if (!tid) tid = setInterval(guncelle, 250); } }
+      document.addEventListener('visibilitychange', geriDon);
+      window.addEventListener('focus', geriDon);
+      window.addEventListener('pageshow', geriDon);
+      // Sayfa yeniden yüklendiyse kaldığı yerden devam
+      function yukle() {
+        try {
+          var v = parseInt(localStorage.getItem(KEY) || '', 10);
+          if (v && Date.now() - v >= 0 && Date.now() - v < SURE + GOSTER_SONRA) baslat(v);
+        } catch (e) {}
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', yukle); else yukle();
     })();
   </script>
 </body>
