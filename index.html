@@ -944,6 +944,7 @@
           awaitingReturn: state.awaitingReturn,
           sessionDone: state.sessionDone,
           dv: state.dv || null,
+          gond: state.gond || null,
           links: LINKS.slice(),
           savedAt: Date.now(),
           api: (LEGACY_SID && state.sessionId === LEGACY_SID) ? LEGACY_API : API_URL
@@ -1027,7 +1028,7 @@
 
     /* v25h-resume 19.11: başarısız istek geri çekilmeli tekrar denenir. click/clickfinish/finish/check/links
        sunucuda idempotent (ilk yazım kazanır). start yalnız ağ hatası / meşgul durumda 2 kez daha denenir. */
-    var RETRY_DELAYS = { click: [800, 2000, 4500], clickfinish: [800, 2000, 4500], finish: [800, 2000, 4500], check: [800, 2000], links: [1500], start: [1200, 3000] };
+    var RETRY_DELAYS = { batch: [800, 2000, 4500], click: [800, 2000, 4500], clickfinish: [800, 2000, 4500], finish: [800, 2000, 4500], check: [800, 2000], links: [1500], start: [1200, 3000] };
     function apiCall(payload, attempt) {
       attempt = attempt || 0;
       var delays = RETRY_DELAYS[payload && payload.action] || [];
@@ -1041,7 +1042,7 @@
     }
     var yaziUcusta = 0; // uçuştaki click/clickfinish/finish sayısı (beacon gereksizse atlanır)
     function apiCallOnce_(payload) {
-      var yazi = !!(payload && /^(click|clickfinish|finish)$/.test(payload.action));
+      var yazi = !!(payload && /^(click|clickfinish|finish|batch)$/.test(payload.action));
       if (yazi) yaziUcusta++;
       var bitir = function () { if (yazi) { yazi = false; yaziUcusta = Math.max(0, yaziUcusta - 1); } };
       return fetch(apiUrlFor_(payload), {
@@ -1763,7 +1764,42 @@
     }
 
     /** Fire-and-forget click log (silent retries). Does not block Kapattım. */
+    /* toplu-19.11: ara adım tıkları sunucuya tek tek gitmez; cihazda (state.statuses + tapMs, localStorage) birikir,
+       turun son tıkında tek pakette (action 'batch') gider. Sunucu eski sürümse ('Bilinmeyen action') tek tek gönderime düşer. */
+    function batchOk_(sid) {
+      try { var u = (typeof apiUrlFor_ === 'function') ? apiUrlFor_({ sessionId: sid }) : API_URL; return /workers\.dev\//.test(String(u)); } catch (e) { return false; }
+    }
+    var batchKapali = false; // sunucu 'batch' bilmiyorsa bu sayfa ömrü boyunca eski yol
+    function bekleyenTiklar_(uptoIdx) {
+      var out = [];
+      for (var i = 0; i < LINKS.length && i <= uptoIdx; i++) {
+        if (state.statuses[i] === 'done' && !gond_()[i]) out.push({ i: i + 1, tMs: tikMs_(i) });
+      }
+      return out;
+    }
+    function gond_() { // sunucuya ulaştığı kesin (yanıtlı) ara tıklar; oturuma bağlı
+      if (!state.gond || state.gond.sid !== state.sessionId) state.gond = { sid: state.sessionId, m: {} };
+      return state.gond.m;
+    }
+    function batchPayload_(sid, uptoIdx, finishIt) {
+      return { action: 'batch', sessionId: sid, clicks: bekleyenTiklar_(uptoIdx), finish: !!finishIt, davranis: davranisOzet_() };
+    }
+    function batchGonder_(payload, onOk, onFail) {
+      state.pendingBatch = payload;
+      var son = function () {};
+      apiCall(payload).then(function (res) {
+        son();
+        state.pendingBatch = null;
+        if (state.sessionId === payload.sessionId) { var gm = gond_(); (payload.clicks || []).forEach(function (c) { gm[c.i - 1] = true; state.confirmed[c.i - 1] = true; }); }
+        if (onOk) onOk(res);
+      }).catch(function (err) {
+        son();
+        if (/Bilinmeyen action/i.test(String(err && err.message || ''))) { batchKapali = true; state.pendingBatch = null; }
+        if (onFail) onFail(err);
+      });
+    }
     function logClickWithRetry(stepIdx, attempt) {
+      if (!batchKapali && batchOk_(state.sessionId)) { state.logPending = false; state.logFailed = false; saveLocal(); return; }
       state.logPending = true;
       state.logFailed = false;
       // v25g-lite: tek click yazımı, beacon/tekrar yok.
@@ -1839,14 +1875,32 @@
           state.logPending = true;
           // v25g-lite: son adımda tek clickfinish (Tamamlandı=Evet + son Tıklandı), beacon yok.
           state.pendingFinish = { sid: state.sessionId, idx: state.step + 1, tMs: tikMs_(state.step) };
-          runServer('clickAndFinish', [state.sessionId, state.step + 1, true], function () {
-            state.pendingFinish = null;
-            markConfirmed(state.step);
-            showThanksScreen();
-          }, function () {
-            // Beacon may still succeed; show thanks anyway
-            showThanksScreen();
-          });
+          var sonAdim = state.step;
+          var eskiYolSon = function () {
+            // eski yol: bekleyen ara tıklar tek tek, sonra clickfinish (ilk yazım kazanır)
+            var sidE = state.pendingFinish ? state.pendingFinish.sid : state.sessionId;
+            bekleyenTiklar_(sonAdim - 1).forEach(function (c) { runServer('logClick', [sidE, c.i, true], function () { gond_()[c.i - 1] = true; }); });
+            runServer('clickAndFinish', [sidE, sonAdim + 1, true], function () {
+              state.pendingFinish = null;
+              markConfirmed(sonAdim);
+              showThanksScreen();
+            }, function () {
+              showThanksScreen();
+            });
+          };
+          if (!batchKapali && batchOk_(state.sessionId)) {
+            var bp = batchPayload_(state.sessionId, sonAdim, true);
+            batchGonder_(bp, function () {
+              state.pendingFinish = null;
+              markConfirmed(sonAdim);
+              showThanksScreen();
+            }, function () {
+              if (batchKapali) { eskiYolSon(); return; }
+              showThanksScreen(); // beacon (pagehide) yine dener; teşekkür ekranı gösterilir
+            });
+          } else {
+            eskiYolSon();
+          }
           saveLocal();
         } else {
           state.tapAt = Date.now();
@@ -1984,6 +2038,7 @@
         ? Math.min(g, nowMs + WAIT_MS) : null;
       state.sessionDone = !!saved.sessionDone;
       state.dv = (saved.dv && saved.dv.s && saved.dv.bg) ? saved.dv : { s: {}, bg: {} };
+      state.gond = (saved.gond && saved.gond.sid === saved.sessionId && saved.gond.m) ? saved.gond : null;
       state.logPending = false;
       state.logFailed = state.clicked && !state.confirmed[state.step];
 
@@ -2024,6 +2079,7 @@
     /** v25h-resume: devam edilen turda sunucuya ulaşmamış tıklamaları (ilk dokunuş zamanıyla) yeniden yolla. */
     function resendUnconfirmed_() {
       if (!state.sessionId || state.sessionDone) return;
+      if (!batchKapali && batchOk_(state.sessionId)) return; // toplu-19.11: son tıkta paketle gider
       var sid = state.sessionId;
       for (var i = 0; i < LINKS.length && i <= state.step; i++) {
         if (state.statuses[i] === 'done' && !state.confirmed[i]) {
@@ -2039,12 +2095,20 @@
 
     /** v25h-resume: arka plana geçiş / sayfa kapanışında onaylanmamış son kaydı beacon ile gönder. */
     var beaconSonAt = 0;
-    function beaconUnconfirmed_() {
+    function beaconUnconfirmed_(kapanis) {
       try {
         if (!state.sessionId) return;
         if (Date.now() - beaconSonAt < 2500) return;
         var payload = null;
-        if (state.pendingFinish) {
+        var toplu = !batchKapali && batchOk_(state.sessionId);
+        if (toplu && state.pendingBatch) {
+          payload = state.pendingBatch;
+        } else if (toplu && !state.sessionDone && kapanis) {
+          var bk = bekleyenTiklar_(state.step);
+          if (bk.length) payload = batchPayload_(state.sessionId, state.step, false);
+        } else if (toplu) {
+          payload = null;
+        } else if (state.pendingFinish) {
           payload = { action: 'clickfinish', sessionId: state.pendingFinish.sid, linkIndex: state.pendingFinish.idx, clicked: true, davranis: davranisOzet_(), tMs: state.pendingFinish.tMs };
         } else if (!state.sessionDone && state.clicked && !state.confirmed[state.step]) {
           payload = { action: 'click', sessionId: state.sessionId, linkIndex: state.step + 1, clicked: true, davranis: davranisOzet_(), tMs: tikMs_(state.step) };
@@ -2562,7 +2626,7 @@
       $('btn-restart-step').addEventListener('click', function () { restartToEntry(true); });
       document.addEventListener('visibilitychange', onVisibilityOrFocus);
       window.addEventListener('focus', onVisibilityOrFocus);
-      window.addEventListener('pagehide', function () { try { davranisGorunurluk_(); } catch (e) {} beaconUnconfirmed_(); });
+      window.addEventListener('pagehide', function () { try { davranisGorunurluk_(); } catch (e) {} beaconUnconfirmed_(true); });
       document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') beaconUnconfirmed_(); });
       // v25h-resume 19.11: yarım tur varsa aynı oturumla kaldığı yerden devam; yoksa normal açılış
       var devam = false;
