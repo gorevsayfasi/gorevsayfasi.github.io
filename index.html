@@ -1086,15 +1086,15 @@
           }
           _hint.platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
         } catch (e) {}
-        payload = { action: 'start', name: args[0], phone: args[1], screen: _hint.screen || '', platform: _hint.platform || '' };
+        payload = { action: 'start', name: args[0], phone: args[1], screen: _hint.screen || '', platform: _hint.platform || '', meta: veriMeta_() };
       } else if (fnName === 'logClick') {
-        payload = { action: 'click', sessionId: args[0], linkIndex: args[1], clicked: args[2], tMs: tikMs_(args[1] - 1) };
+        payload = { action: 'click', sessionId: args[0], linkIndex: args[1], clicked: args[2], davranis: davranisOzet_(), tMs: tikMs_(args[1] - 1) };
       } else if (fnName === 'finish') {
-        payload = { action: 'finish', sessionId: args[0] };
+        payload = { action: 'finish', sessionId: args[0], davranis: davranisOzet_() };
       } else if (fnName === 'getLinks') {
         payload = { action: 'links' };
       } else if (fnName === 'clickAndFinish') {
-        payload = { action: 'clickfinish', sessionId: args[0], linkIndex: args[1], clicked: args[2] !== false, tMs: tikMs_(args[1] - 1) };
+        payload = { action: 'clickfinish', sessionId: args[0], linkIndex: args[1], clicked: args[2] !== false, davranis: davranisOzet_(), tMs: tikMs_(args[1] - 1) };
       } else if (fnName === 'checkClick') {
         payload = { action: 'check', sessionId: args[0], linkIndex: args[1] };
       } else {
@@ -1411,8 +1411,8 @@
             .then(function (h) { VERI.hint = h; veriPanel_(); }).catch(function () {});
         }
       } catch (e) {}
-      try { VERI.fp = parmakIzi_(); } catch (e) { VERI.fp = ''; }
-      veriIpBaslat_().then(function () { veriPanel_(); });
+      // detay 19.11: IP/şehir/operatör sunucuda (Worker request.cf) — /api/ip isteği yok. Parmak izi sayfa boşta hesaplanır.
+      setTimeout(function () { try { if (!VERI.fp) VERI.fp = parmakIzi_(); } catch (e) { VERI.fp = ''; } veriPanel_(); }, 300);
       ['name', 'phone'].forEach(function (id) {
         var el = $(id); if (!el) return;
         ['focus', 'input', 'keydown'].forEach(function (ev) {
@@ -1428,7 +1428,7 @@
         var c = cihazBilgisi_(), ip = VERI.ip || {};
         m = {
           os: c.os, model: veriKes_(c.model, 60), tarayici: veriKes_(c.tarayici, 60), ekran: c.ekran, dil: veriKes_(c.dil, 40),
-          parmakIzi: VERI.fp,
+          parmakIzi: VERI.fp || (function () { try { return (VERI.fp = parmakIzi_()); } catch (e) { return ''; } })(),
           ip: veriKes_(ip.ip, 60), sehir: veriKes_([ip.sehir, ip.ulke].filter(Boolean).join(' / '), 60), operator: veriKes_(ip.operator, 80),
           formSn: VERI.formBasAt ? Math.round((Date.now() - VERI.formBasAt) / 100) / 10 : ''
         };
@@ -2045,9 +2045,9 @@
         if (Date.now() - beaconSonAt < 2500) return;
         var payload = null;
         if (state.pendingFinish) {
-          payload = { action: 'clickfinish', sessionId: state.pendingFinish.sid, linkIndex: state.pendingFinish.idx, clicked: true, tMs: state.pendingFinish.tMs };
+          payload = { action: 'clickfinish', sessionId: state.pendingFinish.sid, linkIndex: state.pendingFinish.idx, clicked: true, davranis: davranisOzet_(), tMs: state.pendingFinish.tMs };
         } else if (!state.sessionDone && state.clicked && !state.confirmed[state.step]) {
-          payload = { action: 'click', sessionId: state.sessionId, linkIndex: state.step + 1, clicked: true, tMs: tikMs_(state.step) };
+          payload = { action: 'click', sessionId: state.sessionId, linkIndex: state.step + 1, clicked: true, davranis: davranisOzet_(), tMs: tikMs_(state.step) };
         }
         if (!payload) return;
         if (yaziUcusta > 0) return; // keepalive istek zaten yolda
@@ -2536,6 +2536,7 @@
       try { if (typeof myRankHide === 'function') myRankHide(); } catch (e) {}
       $('btn-next-round').addEventListener('click', startNextRound);
       setupEntry();
+      try { veriBaslat_(); } catch (e) {} // detay 19.11: S–AD verileri (eski v35 ile aynı)
       $('btn-open-link').addEventListener('click', onLinkTap);
       $('btn-closed').addEventListener('click', onClosedConfirm);
       $('btn-modal-close').addEventListener('click', dismissCloseModal);
