@@ -61,12 +61,8 @@
           return;
         }
         if (turVar()) return;
-        var i = Math.min(SITELER.length - 1, Math.floor(Math.random() * SITELER.length));
-        if (i === SIRA) return;
-        var q = location.search.replace(/^\?/, '').split('&').filter(function (p) { return p && !/^(v|dagit)=/.test(p); });
-        q.push('dagit=1');
-        window.__tkDagit = true;
-        location.replace(SITELER[i] + '?' + q.join('&') + location.hash);
+        /* v25g-hiz 18.11: rastgele dagit KAPALI. 4 origin localStorage paylaşmaz;
+           tur içinde / Trendyol dönüşünde başa atmanın ana nedeniydi. */
       } catch (e) {}
     })();
     function perde(yazi, butonlu) {
@@ -82,6 +78,8 @@
     }
     /* neden: 'yukleme' (sayfa açılmadı / JS hatası) veya 'api'. turYok: çağıran aktif tur olmadığını biliyor. true = geçiş devralındı. */
     window.__tkGecis = function (neden, turYok) {
+      /* 18.11 CF geçişi: www'de ayna/dağıtım geçişi kapalı (aynalar hâlâ Apps Script v35'e yazıyor). */
+      return false;
       if (SIRA < 0 || gecisBasladi) return gecisBasladi;
       if (!turYok && turVar()) return false;
       gecisBasladi = true;
@@ -662,6 +660,7 @@
 </head>
 <body>
   <div class="card" id="app">
+  <script>try { if (window.__tkHazir) window.__tkHazir(); } catch (e) {}</script>
     <div class="status-toast" id="toast"></div>
 
     <!-- ENTRY -->
@@ -914,6 +913,20 @@
       setTimeout(function () { t.classList.remove('show'); }, 1800);
     }
 
+    /** v25g (14.11): link dokunuş anı (tur başından ms). İlk dokunuş saklanır; tekrar/yeniden deneme aynı değeri yollar. */
+    function tikAni_(stepIdx) {
+      try {
+        if (!state.tapMs) state.tapMs = {};
+        if (state.startAt && state.tapMs[stepIdx] == null) state.tapMs[stepIdx] = Math.max(0, Date.now() - state.startAt);
+      } catch (e) {}
+    }
+    function tikMs_(stepIdx) {
+      try {
+        if (state.tapMs && state.tapMs[stepIdx] != null) return state.tapMs[stepIdx];
+      } catch (e) {}
+      return undefined; // yoksa sunucu kendi saatini yazar (eski davranış)
+    }
+
     function saveLocal() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -925,13 +938,15 @@
           clicked: state.clicked,
           confirmed: state.confirmed,
           tapAt: state.tapAt,
+          startAt: state.startAt || null,
+          tapMs: state.tapMs || null,
           linkGateUntil: state.linkGateUntil,
           awaitingReturn: state.awaitingReturn,
           sessionDone: state.sessionDone,
           dv: state.dv || null,
           links: LINKS.slice(),
           savedAt: Date.now(),
-          api: API_URL
+          api: (LEGACY_SID && state.sessionId === LEGACY_SID) ? LEGACY_API : API_URL
         }));
       } catch (e) {}
     }
@@ -941,10 +956,13 @@
         var raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return null;
         var o = JSON.parse(raw);
-        // Eski/bayat tur asla sürdürülmez: kayıt zamanı yoksa, 30 dk'dan eskiyse veya farklı sunucuya aitse silinir
-        if (!o || typeof o.savedAt !== 'number' || Date.now() - o.savedAt > RESUME_MAX_MS || o.savedAt > Date.now() + 60000 || o.api !== API_URL) {
-          clearLocal();
-          return null;
+        // v25g-hiz-oturum: tur ortası kayıt (sessionId + bitmemiş adım) 2 saate kadar korunur;
+        // aksi halde 30 dk kuralı. API URL farkı bitmemiş turu silmez.
+        if (!o || !o.sessionId) return null;
+        var midTour = o.sessionId && o.sessionDone !== true && (o.step || 0) < 12;
+        var maxMs = midTour ? (2 * 60 * 60 * 1000) : RESUME_MAX_MS;
+        if (typeof o.savedAt !== 'number' || Date.now() - o.savedAt > maxMs || o.savedAt > Date.now() + 60000) {
+          clearLocal(); return null; // v25h-resume 19.11: süresi geçen tur (orta tur 2 sa) sürdürülmez
         }
         return o;
       } catch (e) { return null; }
@@ -998,24 +1016,50 @@
     }
 
     // Apps Script web app (JSON API via doPost). text/plain avoids CORS preflight.
-    var API_URL = 'https://script.google.com/macros/s/AKfycbxI63Jc9ixORnF_QW3nzdODLF78fCkaSdBSqdOMFCS2phomxin0yRJo-EzsAN4pgdiPBQ/exec';
+    var API_URL = 'https://tiklama-api.ibrahimtkmz.workers.dev/api/exec';
+    /* ayna-cf 19.11: eski ayna sayfasıyla (Apps Script) başlamış yarım tur bitene kadar aynı sunucuya yazar; yeni turlar Worker'a. */
+    var LEGACY_SID = null, LEGACY_API = null;
+    try {
+      var _lo = JSON.parse(localStorage.getItem('tiklama_session_v2') || 'null');
+      if (_lo && _lo.sessionId && /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(String(_lo.api || ''))) { LEGACY_SID = String(_lo.sessionId); LEGACY_API = String(_lo.api); }
+    } catch (e) {}
+    function apiUrlFor_(p) { return (LEGACY_SID && p && p.sessionId && String(p.sessionId) === LEGACY_SID) ? LEGACY_API : API_URL; }
 
+    /* v25h-resume 19.11: başarısız istek geri çekilmeli tekrar denenir. click/clickfinish/finish/check/links
+       sunucuda idempotent (ilk yazım kazanır). start yalnız ağ hatası / meşgul durumda 2 kez daha denenir. */
+    var RETRY_DELAYS = { click: [800, 2000, 4500], clickfinish: [800, 2000, 4500], finish: [800, 2000, 4500], check: [800, 2000], links: [1500], start: [1200, 3000] };
     function apiCall(payload, attempt) {
       attempt = attempt || 0;
-      var maxAttempts = 3; // attempt 0,1,2 → up to 3 tries
-      return fetch(API_URL, {
+      var delays = RETRY_DELAYS[payload && payload.action] || [];
+      return apiCallOnce_(payload).catch(function (err) {
+        var retryable = !(err && (err.sessionGone || err.bekle || err.noRetry)) && !/Geçersiz linkIndex|Bilinmeyen action/i.test(String(err && err.message || ''));
+        if (payload && payload.action === 'start') retryable = retryable && !!(err && (err.name === 'TypeError' || err.busy || err.tkNet));
+        if (!retryable || attempt >= delays.length) throw err;
+        var wait = delays[attempt] + Math.floor(Math.random() * 400);
+        return new Promise(function (r) { setTimeout(r, wait); }).then(function () { return apiCall(payload, attempt + 1); });
+      });
+    }
+    var yaziUcusta = 0; // uçuştaki click/clickfinish/finish sayısı (beacon gereksizse atlanır)
+    function apiCallOnce_(payload) {
+      var yazi = !!(payload && /^(click|clickfinish|finish)$/.test(payload.action));
+      if (yazi) yaziUcusta++;
+      var bitir = function () { if (yazi) { yazi = false; yaziUcusta = Math.max(0, yaziUcusta - 1); } };
+      return fetch(apiUrlFor_(payload), {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
+        keepalive: yazi, // sayfa kapanırsa da istek tamamlanır
         redirect: 'follow'
-      }).then(function (res) {
+      }).then(function (res) { bitir(); return res; }, function (e) { bitir(); throw e; }).then(function (res) {
         return res.text().then(function (text) {
           var data;
           try { data = JSON.parse(text); } catch (e) {
-            throw new Error('Geçersiz API yanıtı');
+            var busy = /çok fazla yürütme|çok fazla komut dosyası|eş zamanlı/i.test(text || '');
+            var pe = new Error(busy ? 'Sunucu meşgul' : 'Geçersiz API yanıtı');
+            if (busy) pe.busy = true;
+            throw pe;
           }
           if (data && data.bekle) {
-            // Turlar arası bekleme: tekrar deneme yok, kalan süre ile birlikte yukarı ilet
             var be = new Error(data.error || 'Biraz sonra tekrar dene');
             be.bekle = true; be.kalanSn = Math.max(1, +data.kalanSn || 0); be.noRetry = true;
             throw be;
@@ -1023,37 +1067,34 @@
           if (!data || data.ok !== true) {
             var ae = new Error((data && data.error) || 'API hatası');
             if (/Oturum bulunamad|session not found/i.test(ae.message)) { ae.sessionGone = true; ae.noRetry = true; }
+            if (/çok fazla yürütme|Kilitleme|kilit|timeout|zaman aşı|Sunucu meşgul/i.test(ae.message)) ae.busy = true;
             throw ae;
           }
           return data.result;
         });
-      }).catch(function (err) {
-        if (err && err.noRetry) throw err;
-        if (attempt < maxAttempts - 1) {
-          var delay = attempt === 0 ? 1000 : 2000; // 1s, then 2s
-          toast('Kayıt hatası, tekrar deneniyor…');
-          return new Promise(function (resolve, reject) {
-            setTimeout(function () {
-              apiCall(payload, attempt + 1).then(resolve, reject);
-            }, delay);
-          });
-        }
-        throw err;
       });
     }
 
     function runServer(fnName, args, onSuccess, onFailure) {
       var payload;
       if (fnName === 'startSession') {
-        payload = { action: 'start', name: args[0], phone: args[1], meta: args[2] || veriMeta_() };
+        var _hint = {};
+        try {
+          if (window.screen) {
+            _hint.screen = String(window.screen.width || '') + 'x' + String(window.screen.height || '');
+            if (window.devicePixelRatio) _hint.screen += ' @' + String(Math.round(window.devicePixelRatio * 100) / 100);
+          }
+          _hint.platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+        } catch (e) {}
+        payload = { action: 'start', name: args[0], phone: args[1], screen: _hint.screen || '', platform: _hint.platform || '' };
       } else if (fnName === 'logClick') {
-        payload = { action: 'click', sessionId: args[0], linkIndex: args[1], clicked: args[2], davranis: davranisOzet_() };
+        payload = { action: 'click', sessionId: args[0], linkIndex: args[1], clicked: args[2], tMs: tikMs_(args[1] - 1) };
       } else if (fnName === 'finish') {
-        payload = { action: 'finish', sessionId: args[0], davranis: davranisOzet_() };
+        payload = { action: 'finish', sessionId: args[0] };
       } else if (fnName === 'getLinks') {
         payload = { action: 'links' };
       } else if (fnName === 'clickAndFinish') {
-        payload = { action: 'clickfinish', sessionId: args[0], linkIndex: args[1], clicked: args[2] !== false, davranis: davranisOzet_() };
+        payload = { action: 'clickfinish', sessionId: args[0], linkIndex: args[1], clicked: args[2] !== false, tMs: tikMs_(args[1] - 1) };
       } else if (fnName === 'checkClick') {
         payload = { action: 'check', sessionId: args[0], linkIndex: args[1] };
       } else {
@@ -1064,22 +1105,21 @@
       apiCall(payload).then(function (result) {
         if (onSuccess) onSuccess(result);
       }).catch(function (err) {
-        if (err && err.sessionGone) { oturumYok_(); return; }
+        // v25g-hiz-oturum 18.11: hiçbir API hatası giriş ekranına atmaz; tekrar deneme açılsın
         console.error(fnName, err);
         if (onFailure) onFailure(err);
-        else toast('Kayıt hatası, tekrar deneniyor…');
+        else if (roundActive_()) toast('Kayıt gecikti, aynı turdasınız. Lütfen devam edin.');
+        else toast('Kayıt gecikti, tekrar deneniyor…');
       });
     }
 
-    /** Sunucu turu tanımıyor (eski/bayat tur): tekrar deneme yok, kayıt silinir, giriş ekranına dönülür. */
+    /** v25g-hiz-oturum: API hatası/oturum bulunamadı girişe atmaz, turu silmez. */
     var oturumYokAt = 0;
     function oturumYok_() {
-      clearLocal();
-      state.sessionId = null; state.sessionDone = true;
-      try { stopWaitTicker(); } catch (e) {}
-      var rb = $('btn-restart');
-      if (rb) rb.click(); // restartToEntry: durum sıfırlanır, giriş ekranı + taze linkler
-      if (Date.now() - oturumYokAt > 3000) { oturumYokAt = Date.now(); setTimeout(function () { toast('Tur bulunamadı, lütfen tekrar Başla’ya basın.'); }, 50); }
+      if (Date.now() - oturumYokAt > 3000) {
+        oturumYokAt = Date.now();
+        setTimeout(function () { toast('Kayıt gecikti, aynı turdasınız. Lütfen devam edin.'); }, 50);
+      }
     }
 
     /** Başla / yeni tur: önce eski turu tamamen sil, sonra linkleri sunucudan taze çek. */
@@ -1090,17 +1130,18 @@
       }, function () { done(); });
     }
 
-    /** Survives tab backgrounding when opening Trendyol (last step). */
+    /** v25h-resume 19.11: sayfa kapanırken/arka plana geçerken onaylanmamış kayıt sendBeacon/keepalive ile gider (ilk yazım kazanır, çift yazım olmaz). */
     function beaconPost(payload) {
+
       var body = JSON.stringify(payload);
       try {
         if (navigator.sendBeacon) {
           var blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
-          if (navigator.sendBeacon(API_URL, blob)) return true;
+          if (navigator.sendBeacon(apiUrlFor_(payload), blob)) return true;
         }
       } catch (e) {}
       try {
-        fetch(API_URL, {
+        fetch(apiUrlFor_(payload), {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: body,
@@ -1144,20 +1185,29 @@
 
     /** Fresh load: read Linkler sheet. Failures fall back to DEFAULT_LINKS. */
     function loadLinksFromSheet(done, ilk) {
-      setStartReady(false);
+      /* v25g-hiz 18.11: Başla'yı 17-25 sn kilitleme; 25 sn zaman aşımında yedek siteye atma.
+         Varsayılan/önbellek linklerle hemen hazır ol, taze liste arka planda gelsin. */
+      try {
+        var cached = JSON.parse(localStorage.getItem('tiklama_links_v1') || 'null');
+        if (Array.isArray(cached) && cached.length && cached.every(function (u) { return typeof u === 'string' && /^https?:\/\/\S+$/i.test(u.trim()); })) {
+          applyLinks(cached);
+        }
+      } catch (eCache) {}
+      setStartReady(true);
       var bitti = false;
       function basarili(result) {
         if (bitti) return; bitti = true;
         applyLinks(Array.isArray(result) ? result : []);
+        try { if (Array.isArray(result) && result.length) localStorage.setItem('tiklama_links_v1', JSON.stringify(result)); } catch (eS) {}
         setStartReady(true);
         if (ilk && window.__tkGecisTamam) window.__tkGecisTamam();
         if (done) done();
       }
       function basarisiz(err) {
         if (bitti) return; bitti = true;
-        applyLinks(DEFAULT_LINKS);
+        if (!LINKS || !LINKS.length) applyLinks(DEFAULT_LINKS);
         setStartReady(true);
-        if (ilk && gecisGerekli_(err) && !state.sessionId && window.__tkGecis) window.__tkGecis('api', true);
+        /* Yedek siteye geçme: yavaş Apps Script zaman aşımı turu/kaydı bozuyordu. */
         if (done) done();
       }
       if (ilk) {
@@ -1178,8 +1228,8 @@
     }
 
     // ---- tur içi link tazeleme (Linkler sekmesindeki değişiklikler turdaki kişiye de yansısın) ----
-    var LINK_REFRESH_MIN_MS = 10000;   // zorlamasız çağrılar arası en az süre
-    var LINK_REFRESH_EVERY_MS = 30000; // adım ekranı açıkken periyodik kontrol
+    var LINK_REFRESH_MIN_MS = 60000;    // v25g-hiz-retry 18.11 16:36: arka plan link isteğini seyrelt
+    var LINK_REFRESH_EVERY_MS = 180000; // 3 dk (eskiden 30 sn) — eşzamanlı komut dosyası kotasını düşür
     var linkRefreshInFlight = false;
     var linkRefreshLastAt = 0;
     var linkRefreshTimerId = null;
@@ -1219,6 +1269,7 @@
 
     /** Arka planda Linkler'i oku (sessiz: hata/boş sonuçta eldeki linkler kalır, toast yok). */
     function refreshLinksInBackground(force) {
+      return; // v25g-lite: periyodik getLinks yoklaması kapalı (yük)
       if (linkRefreshInFlight) return;
       var now = Date.now();
       if (!force && now - linkRefreshLastAt < LINK_REFRESH_MIN_MS) return;
@@ -1244,6 +1295,7 @@
     }
 
     function startLinkRefreshLoop_() {
+      return; // v25g-lite
       if (linkRefreshTimerId) return;
       linkRefreshTimerId = setInterval(function () {
         if (document.hidden || !roundActive_()) return;
@@ -1345,15 +1397,9 @@
         function son(v) { if (bitti) return; bitti = true; if (v) VERI.ip = v; resolve(VERI.ip); }
         setTimeout(function () { son(null); }, 4000);
         try {
-          var ipUrls = ['https://gorev-sayfa.pages.dev/api/ip', 'https://www.tiklama.com.tr/api/ip'];
-          (function dene(i) {
-            if (i >= ipUrls.length) { son(null); return; }
-            var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-            var tmo = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) {} }, 1700);
-            fetch(ipUrls[i], ctl ? { cache: 'no-store', signal: ctl.signal } : { cache: 'no-store' }).then(function (r) { clearTimeout(tmo); return r.json(); })
-              .then(function (d) { if (d && typeof d === 'object' && d.ip) son(d); else dene(i + 1); })
-              .catch(function () { dene(i + 1); });
-          })(0);
+          fetch('/api/ip', { cache: 'no-store' }).then(function (r) { return r.json(); })
+            .then(function (d) { son(d && typeof d === 'object' && d.ip ? d : null); })
+            .catch(function () { son(null); });
         } catch (e) { son(null); }
       });
       return VERI.ipBekle;
@@ -1452,6 +1498,8 @@
     function applyNewSession_(sessionId, name, phoneText) {
       stopWaitTicker();
       state.sessionId = sessionId;
+      state.startAt = Date.now(); // v25g: tur başı (istemci saati); tMs buna göre
+      state.tapMs = {};
       state.name = name;
       state.phone = phoneText;
       state.step = 0;
@@ -1542,14 +1590,11 @@
       btn.classList.add('loading');
 
       var phoneText = phoneForSheet(phone);
-      // Her Başla = yepyeni tur: kayıtlı/eski tur silinir, linkler sunucudan taze alınır
+      // Her Başla = yepyeni tur: kayıtlı/eski tur silinir
       clearLocal();
       state.sessionId = null; state.sessionDone = false; state.step = 0;
-      var linkHazir = new Promise(function (r) { taptazeLinkler_(r); });
-      // IP/konum en fazla ~1.5 sn beklenir; gelmezse boş gönderilir (akış asla takılmaz)
-      var ipHazir = Promise.race([veriIpBaslat_(), new Promise(function (r) { setTimeout(r, 3500); })]).catch(function () {});
-      Promise.all([ipHazir, linkHazir]).then(function () {
-      runServer('startSession', [name, phoneText, veriMeta_()], function (sessionId) {
+      // v25g-lite: Başla'da yalnız start; ek getLinks/IP yok.
+      runServer('startSession', [name, phoneText], function (sessionId) {
         VERI.formBasAt = null;
         applyNewSession_(sessionId, name, phoneText);
         btn.disabled = false;
@@ -1563,13 +1608,10 @@
           bekleGoster_(Date.now() + err.kalanSn * 1000);
         } else if (/Kilitleme|kilit|timeout|zaman aşı/i.test(msg)) {
           toast('Sunucu meşgul. Lütfen birkaç saniye sonra tekrar Başla’ya basın.');
-        } else if (gecisGerekli_(err) && !state.sessionId && window.__tkGecis && window.__tkGecis('api', true)) {
-          // yedek siteye geçiliyor
         } else {
           toast('Kayıt başlatılamadı. İnternetinizi kontrol edip tekrar deneyin.');
         }
         console.error(err);
-      });
       });
     }
 
@@ -1609,7 +1651,6 @@
       renderDots();
       showScreen('screen-step');
       saveLocal();
-      refreshLinksInBackground(true);
     }
 
     function resetClosedButton() {
@@ -1723,29 +1764,15 @@
 
     /** Fire-and-forget click log (silent retries). Does not block Kapattım. */
     function logClickWithRetry(stepIdx, attempt) {
-      attempt = attempt || 0;
       state.logPending = true;
       state.logFailed = false;
-      // Best-effort beacon so a backgrounded tab still delivers the write.
-      beaconPost({
-        action: 'click',
-        sessionId: state.sessionId,
-        linkIndex: stepIdx + 1,
-        clicked: true,
-        davranis: davranisOzet_()
-      });
+      // v25g-lite: tek click yazımı, beacon/tekrar yok.
       runServer('logClick', [state.sessionId, stepIdx + 1, true], function () {
         markConfirmed(stepIdx);
       }, function () {
-        if (attempt < 2) {
-          setTimeout(function () {
-            logClickWithRetry(stepIdx, attempt + 1);
-          }, 600 * Math.pow(2, attempt));
-        } else {
-          state.logPending = false;
-          // Silent fail — Kapattım no longer depends on sheet verify.
-          saveLocal();
-        }
+        state.logPending = false;
+        // Silent fail — Kapattım no longer depends on sheet verify.
+        saveLocal();
       });
     }
 
@@ -1799,6 +1826,7 @@
       var needRelog = state.clicked && !state.confirmed[state.step] && (state.logFailed || !state.logPending);
 
       if (firstTap) {
+        tikAni_(state.step);
         state.clicked = true;
         state.statuses[state.step] = 'done';
         if (!isLast) davranisDokunus_(state.step);
@@ -1809,16 +1837,10 @@
           state.awaitingReturn = false;
           state.sessionDone = true;
           state.logPending = true;
-          var payload = {
-            action: 'clickfinish',
-            sessionId: state.sessionId,
-            linkIndex: state.step + 1,
-            clicked: true,
-            davranis: davranisOzet_()
-          };
-          beaconPost(payload);
-          // Also normal fetch when possible
+          // v25g-lite: son adımda tek clickfinish (Tamamlandı=Evet + son Tıklandı), beacon yok.
+          state.pendingFinish = { sid: state.sessionId, idx: state.step + 1, tMs: tikMs_(state.step) };
           runServer('clickAndFinish', [state.sessionId, state.step + 1, true], function () {
+            state.pendingFinish = null;
             markConfirmed(state.step);
             showThanksScreen();
           }, function () {
@@ -1834,8 +1856,7 @@
           startWaitTicker();
         }
       } else if (needRelog && !isLast) {
-        // Re-send log without resetting the 30s timer
-        logClickWithRetry(state.step, 0);
+        logClickWithRetry(state.step, 0); // v25h-resume: kayıt ulaşmadıysa ikinci dokunuşta yeniden yolla
       }
       // Re-tap otherwise: reopen link, keep timer
 
@@ -1907,7 +1928,6 @@
 
         function onVisibilityOrFocus() {
       davranisGorunurluk_();
-      if (!document.hidden && roundActive_()) refreshLinksInBackground(true);
       if (state.sessionDone) {
         if (!document.hidden) showThanksScreen();
         return;
@@ -1929,6 +1949,7 @@
     }
 
     function resumeIfPossible() {
+      // v25h-resume 19.11: kaldığı yerden devam AÇIK (aynı sunucu oturumu, yeni start yok)
       var saved = loadLocal();
       if (!saved || !saved.sessionId) return false;
       // Keep the same link list the session started with
@@ -1944,6 +1965,8 @@
       state.confirmed = saved.confirmed || LINKS.map(function () { return false; });
       while (state.confirmed.length < LINKS.length) state.confirmed.push(false);
       state.tapAt = saved.tapAt || null;
+      state.startAt = saved.startAt || null;
+      state.tapMs = saved.tapMs || {};
       state.awaitingReturn = !!saved.awaitingReturn;
       // Yenileme sayacı bitirmesin: dokunuş zamanı geçersizse (yok / gelecekte) linke yeniden dokunmak gerekir
       var nowMs = Date.now();
@@ -1994,7 +2017,43 @@
           showCloseModal();
         }
       }
+      try { resendUnconfirmed_(); } catch (e) {}
       return true;
+    }
+
+    /** v25h-resume: devam edilen turda sunucuya ulaşmamış tıklamaları (ilk dokunuş zamanıyla) yeniden yolla. */
+    function resendUnconfirmed_() {
+      if (!state.sessionId || state.sessionDone) return;
+      var sid = state.sessionId;
+      for (var i = 0; i < LINKS.length && i <= state.step; i++) {
+        if (state.statuses[i] === 'done' && !state.confirmed[i]) {
+          (function (idx) {
+            if (idx === state.step) state.logPending = true;
+            runServer('logClick', [sid, idx + 1, true], function () {
+              if (state.sessionId === sid) markConfirmed(idx);
+            }, function () { if (idx === state.step) { state.logPending = false; state.logFailed = true; } });
+          })(i);
+        }
+      }
+    }
+
+    /** v25h-resume: arka plana geçiş / sayfa kapanışında onaylanmamış son kaydı beacon ile gönder. */
+    var beaconSonAt = 0;
+    function beaconUnconfirmed_() {
+      try {
+        if (!state.sessionId) return;
+        if (Date.now() - beaconSonAt < 2500) return;
+        var payload = null;
+        if (state.pendingFinish) {
+          payload = { action: 'clickfinish', sessionId: state.pendingFinish.sid, linkIndex: state.pendingFinish.idx, clicked: true, tMs: state.pendingFinish.tMs };
+        } else if (!state.sessionDone && state.clicked && !state.confirmed[state.step]) {
+          payload = { action: 'click', sessionId: state.sessionId, linkIndex: state.step + 1, clicked: true, tMs: tikMs_(state.step) };
+        }
+        if (!payload) return;
+        if (yaziUcusta > 0) return; // keepalive istek zaten yolda
+        beaconSonAt = Date.now();
+        beaconPost(payload);
+      } catch (e) {}
     }
 
     // ---- teşekkür ekranı: tur ilerlemesi + "N. tura başla" ----
@@ -2048,6 +2107,7 @@
       l.textContent = n ? n + '. tura başla' : 'Yeni tura başla';
     }
     function turKontrolFetch(phone) {
+      return Promise.reject(new Error('v25g-lite: seanskontrol kapalı'));
       return fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -2125,7 +2185,7 @@
       btn.disabled = true; btn.classList.add('loading');
       clearLocal();
       state.sessionId = null;
-      taptazeLinkler_(function () {
+      // v25g-lite: yeni turda yalnız start
       runServer('startSession', [name, phone], function (sessionId) {
         turKontrolId = null;
         applyNewSession_(sessionId, name, phone);
@@ -2142,7 +2202,6 @@
           toast('Yeni tur başlatılamadı. İnternetinizi kontrol edip tekrar deneyin.');
         }
         console.error(err);
-      });
       });
     }
 
@@ -2195,6 +2254,8 @@
     }
     function kShowErr(msg) { var e = $('k-err'); e.textContent = msg; e.classList.toggle('show', !!msg); }
     function doKontrol() {
+      return; // v25g-lite: seanskontrol kapalı
+
       var el = $('k-phone');
       el.value = formatPhoneInput(el.value);
       if (!isValidTRMobile(el.value)) {
@@ -2471,8 +2532,8 @@
 
     // ---- wire up ----
     function init() {
-      try { setupRank(); } catch (e) {}
-      try { setupKontrol(); } catch (e) {}
+      // v25g-lite: sıralama ve seans kontrol API'si kapalı
+      try { if (typeof myRankHide === 'function') myRankHide(); } catch (e) {}
       $('btn-next-round').addEventListener('click', startNextRound);
       setupEntry();
       $('btn-open-link').addEventListener('click', onLinkTap);
@@ -2500,16 +2561,15 @@
       $('btn-restart-step').addEventListener('click', function () { restartToEntry(true); });
       document.addEventListener('visibilitychange', onVisibilityOrFocus);
       window.addEventListener('focus', onVisibilityOrFocus);
-      window.addEventListener('pagehide', function () { try { davranisGorunurluk_(); } catch (e) {} });
-      try { veriBaslat_(); } catch (e) {}
-      startLinkRefreshLoop_();
-      if (resumeIfPossible()) {
-        // Mid-session resume: keep stored links, enable start for later restart
-        setStartReady(true);
-      } else {
-        // Every fresh load reads the sheet
-        loadLinksFromSheet(null, true);
-      }
+      window.addEventListener('pagehide', function () { try { davranisGorunurluk_(); } catch (e) {} beaconUnconfirmed_(); });
+      document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') beaconUnconfirmed_(); });
+      // v25h-resume 19.11: yarım tur varsa aynı oturumla kaldığı yerden devam; yoksa normal açılış
+      var devam = false;
+      try { devam = resumeIfPossible(); } catch (eR) { console.error('resume', eR); devam = false; }
+      if (devam) setStartReady(true);
+      else loadLinksFromSheet(null, true);
+      // bfcache'ten dönüşte de ekran durumu tazelensin
+      window.addEventListener('pageshow', function (ev) { if (ev && ev.persisted) { try { onVisibilityOrFocus(); } catch (e) {} } });
     }
 
     if (document.readyState === 'loading') {
